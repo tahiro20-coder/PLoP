@@ -50,10 +50,10 @@ def average_metrics(metrics_list):
 def main():
     parser = argparse.ArgumentParser(description="Run alignment metrics on a model and dataset.")
     parser.add_argument('--model', type=str, required=True, help='HuggingFace model handle')
-    parser.add_argument('--dataset', type=str, required=True, choices=['math', 'code', 'history', 'logic'], help='Dataset name')
+    parser.add_argument('--dataset', type=str, required=True, choices=['math', 'code', 'history', 'logic', 'medic'], help='Dataset name')
     parser.add_argument('--batchsize', type=int, default=8, help='Batch size')
     parser.add_argument('--nbsamples', type=int, default=100, help='Number of samples to use from dataset')
-    parser.add_argument('--seqlen', type=int, default=256, help='Sequence length')
+    parser.add_argument('--seqlen', type=int, default=2048, help='Sequence length')
     parser.add_argument('--aggregation', type=str, default='type', choices=['type', 'layer', 'None'], help='Aggregation type')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save results')
     args = parser.parse_args()
@@ -73,6 +73,7 @@ def main():
         'code': 'code',
         'history': 'mmlu_history',
         'logic': 'mmlu_logic',
+        'medic': 'medqa'
     }
     dataset_name = dataset_map[args.dataset]
 
