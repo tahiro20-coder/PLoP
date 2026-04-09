@@ -56,6 +56,8 @@ def main():
     parser.add_argument('--seqlen', type=int, default=2048, help='Sequence length')
     parser.add_argument('--aggregation', type=str, default='type', choices=['type', 'layer', 'None'], help='Aggregation type')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save results')
+    parser.add_argument('--plot', action='store_true', help='Enable step-by-step matrix visualization')
+    parser.add_argument('--plot_limit', type=int, default=5, help='Limit number of modules plotted (0 or -1 for all)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -95,7 +97,12 @@ def main():
         print(f"Tokenizing batch {i+1}/{len(batches)}...")
         batch = prepare_batch(batch_problems, tokenizer, max_length=args.seqlen)
         print(f"Calculating alignment metrics for batch {i+1}/{len(batches)}...")
-        metrics = calculate_nfn_scores(model, batch)
+        metrics = calculate_nfn_scores(
+            model, 
+            batch, 
+            plot=args.plot and (i == 0),  # Only plot for the first batch to avoid redundancy
+            plot_limit=args.plot_limit
+        )
         all_metrics.append(metrics)
 
     avg_metrics = average_metrics(all_metrics)

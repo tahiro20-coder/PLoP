@@ -1,8 +1,10 @@
 import torch
 from collections import defaultdict
 import numpy as np
+import os
+from src.visualizer import plot_plop_steps
 
-def calculate_nfn_scores(model, batch, random_baseline=True):
+def calculate_nfn_scores(model, batch, random_baseline=True, plot=False, plot_limit=5):
     """
     Calculate NFN scores for all weight matrices.
     Args:
@@ -12,6 +14,7 @@ def calculate_nfn_scores(model, batch, random_baseline=True):
     Returns:
         Dictionary of NFN scores for all weight matrices.
     """
+    plot_count = 0
     # Move batch to GPU if needed
     if next(model.parameters()).device != batch['input_ids'].device:
         batch = {k: v.to(next(model.parameters()).device) for k, v in batch.items()}
@@ -65,6 +68,19 @@ def calculate_nfn_scores(model, batch, random_baseline=True):
                         Wz_random = torch.mm(z_random_normalized, W_normalized.t())
                         metrics[name]['random'] = torch.norm(Wz_random, dim=1).mean().item()/np.sqrt(z.shape[1])
                     metrics[name]['nfn'] = metrics[name]['actual']/metrics[name]['random']
+                    
+                    # Optional Step-by-Step Visualization
+                    nonlocal plot_count
+                    if plot and (plot_limit <= 0 or plot_count < plot_limit):
+                        plot_plop_steps(
+                            input_z=z,
+                            norm_z=z_normalized,
+                            norm_w=W_normalized,
+                            projection=Wz,
+                            nfn_score=metrics[name]['nfn'],
+                            output_dir=os.path.join("plop_plots", name.replace('.', '_'))
+                        )
+                        plot_count += 1
                 except RuntimeError as e:
                     print(f"Error in layer {name}:")
                     print(f"Input shape: {z.shape}")
