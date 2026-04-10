@@ -9,6 +9,7 @@ from src.metrics import calculate_nfn_scores, get_group_metrics
 import json
 from pprint import pprint
 from collections import defaultdict
+import gc
 
 
 print("CUDA available:", torch.cuda.is_available())
@@ -49,8 +50,8 @@ def average_metrics(metrics_list):
 
 def main():
     parser = argparse.ArgumentParser(description="Run alignment metrics on a model and dataset.")
-    parser.add_argument('--model', type=str, required=True, help='HuggingFace model handle')
-    parser.add_argument('--dataset', type=str, required=True, choices=['math', 'code', 'history', 'logic', 'medic'], help='Dataset name')
+    parser.add_argument('--model', type=str, nargs='+', required=True, help='HuggingFace model handle(s), space-separated')
+    parser.add_argument('--dataset', type=str, required=True, choices=['math', 'code', 'history', 'logic', 'medic', 'anatomy', 'genetics', 'med_prof'], help='Dataset name')
     parser.add_argument('--batchsize', type=int, default=8, help='Batch size')
     parser.add_argument('--nbsamples', type=int, default=100, help='Number of samples to use from dataset')
     parser.add_argument('--seqlen', type=int, default=2048, help='Sequence length')
@@ -60,84 +61,109 @@ def main():
     parser.add_argument('--plot_limit', type=int, default=5, help='Limit number of modules plotted (0 or -1 for all)')
     args = parser.parse_args()
 
+    # Support comma-separated input if provided as a single string
+    if len(args.model) == 1 and ',' in args.model[0]:
+        model_list = args.model[0].split(',')
+    else:
+        model_list = args.model
+
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load model and tokenizer
-    print(f"Loading model: {args.model}")
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16, device_map="auto")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    for model_handle in model_list:
+        model_handle = model_handle.strip()
+        print(f"\n{'#'*80}")
+        print(f" PROCESSING MODEL: {model_handle} ".center(80, '#'))
+        print(f"{'#'*80}\n")
 
-    # Map dataset names
-    dataset_map = {
-        'math': 'gsm8k',
-        'code': 'code',
-        'history': 'mmlu_history',
-        'logic': 'mmlu_logic',
-        'medic': 'medqa'
-    }
-    dataset_name = dataset_map[args.dataset]
+        # Load model and tokenizer
+        print(f"Loading model: {model_handle}")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(model_handle, torch_dtype=torch.float16, device_map="auto")
+            tokenizer = AutoTokenizer.from_pretrained(model_handle, trust_remote_code=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+        except Exception as e:
+            print(f"Error loading model {model_handle}: {e}")
+            continue
 
-    # Get dataset
-    print(f"Loading dataset: {args.dataset} ({dataset_name})")
-    problems = get_dataset(dataset_name, args.nbsamples, tokenizer)
-    #import pdb; pdb.set_trace()
-    print(f"Sampled {len(problems)} problems from dataset")
-    if len(problems) > args.nbsamples:
-        problems = random.sample(problems, args.nbsamples)
-        
-    # Split into batches
-    batches = [problems[i:i+args.batchsize] for i in range(0, len(problems), args.batchsize)]
-    print(f"Processing {len(batches)} batches of size up to {args.batchsize}")
+        # Map dataset names
+        dataset_map = {
+            'math': 'gsm8k',
+            'code': 'code',
+            'history': 'mmlu_history',
+            'logic': 'mmlu_logic',
+            'medic': 'medqa',
+            'anatomy': 'mmlu_anatomy',
+            'genetics': 'mmlu_genetics',
+            'med_prof': 'mmlu_medical'
+        }
+        dataset_name = dataset_map[args.dataset]
 
-    # Calculate metrics for each batch and average
-    all_metrics = []
-    for i, batch_problems in tqdm(enumerate(batches), total=len(batches)):
-        print(f"Tokenizing batch {i+1}/{len(batches)}...")
-        batch = prepare_batch(batch_problems, tokenizer, max_length=args.seqlen)
-        print(f"Calculating alignment metrics for batch {i+1}/{len(batches)}...")
-        metrics = calculate_nfn_scores(
-            model, 
-            batch, 
-            plot=args.plot and (i == 0),  # Only plot for the first batch to avoid redundancy
-            plot_limit=args.plot_limit
-        )
-        all_metrics.append(metrics)
+        # Get dataset
+        print(f"Loading dataset: {args.dataset} ({dataset_name})")
+        problems = get_dataset(dataset_name, args.nbsamples, tokenizer)
+        print(f"Sampled {len(problems)} problems from dataset")
+        if len(problems) > args.nbsamples:
+            problems = random.sample(problems, args.nbsamples)
+            
+        # Split into batches
+        batches = [problems[i:i+args.batchsize] for i in range(0, len(problems), args.batchsize)]
+        print(f"Processing {len(batches)} batches of size up to {args.batchsize}")
 
-    avg_metrics = average_metrics(all_metrics)
-    metrics_path = os.path.join(args.output_dir, args.model.split('/')[-1] + '_' + args.dataset + '_metrics.json')
-    with open(metrics_path, 'w') as f:
-        json.dump(avg_metrics, f, indent=2)
-    print(f"Saved averaged metrics to {metrics_path}")
+        # Calculate metrics for each batch and average
+        all_metrics = []
+        for i, batch_problems in tqdm(enumerate(batches), total=len(batches)):
+            batch = prepare_batch(batch_problems, tokenizer, max_length=args.seqlen)
+            metrics = calculate_nfn_scores(
+                model, 
+                batch, 
+                plot=args.plot and (i == 0),
+                plot_limit=args.plot_limit
+            )
+            all_metrics.append(metrics)
 
-    # Aggregation
-    agg_results = None
-    if args.aggregation == 'type':
-        agg_results = get_group_metrics(avg_metrics, individual=True)
-        agg_path = os.path.join(args.output_dir, args.model.split('/')[-1] + '_' + args.dataset + '_aggregated_by_type.json')
-        with open(agg_path, 'w') as f:
-            json.dump(agg_results, f, indent=2)
-        print_stylish_results(agg_results, title="Aggregated by Module Type")
-        print(f"Saved aggregated results to {agg_path}")
-    elif args.aggregation == 'layer':
-        # Find all layer numbers
-        layer_numbers = set()
-        for name in avg_metrics.keys():
-            if 'layers.' in name:
-                try:
-                    layer_num = int(name.split('layers.')[1].split('.')[0])
-                    layer_numbers.add(layer_num)
-                except (IndexError, ValueError):
-                    continue
-        agg_results = get_group_metrics(avg_metrics, groups=[f'layers.{i}' for i in sorted(layer_numbers)], individual=True)
-        agg_path = os.path.join(args.output_dir, args.model.split('/')[-1] + '_' + args.dataset + '_aggregated_by_layer.json')
-        with open(agg_path, 'w') as f:
-            json.dump(agg_results, f, indent=2)
-        print_stylish_results(agg_results, title="Aggregated by Layer")
-        print(f"Saved aggregated results to {agg_path}")
-    else:
-        print_stylish_results(avg_metrics, title="Raw Metrics (No Aggregation)")
+        avg_metrics = average_metrics(all_metrics)
+        model_basename = model_handle.split('/')[-1]
+        metrics_path = os.path.join(args.output_dir, model_basename + '_' + args.dataset + '_metrics.json')
+        with open(metrics_path, 'w') as f:
+            json.dump(avg_metrics, f, indent=2)
+        print(f"Saved averaged metrics to {metrics_path}")
+
+        # Aggregation
+        agg_results = None
+        if args.aggregation == 'type':
+            agg_results = get_group_metrics(avg_metrics, individual=True)
+            agg_path = os.path.join(args.output_dir, model_basename + '_' + args.dataset + '_aggregated_by_type.json')
+            with open(agg_path, 'w') as f:
+                json.dump(agg_results, f, indent=2)
+            print_stylish_results(agg_results, title=f"Aggregated by Module Type ({model_basename})")
+            print(f"Saved aggregated results to {agg_path}")
+        elif args.aggregation == 'layer':
+            layer_numbers = set()
+            for name in avg_metrics.keys():
+                if 'layers.' in name:
+                    try:
+                        layer_num = int(name.split('layers.')[1].split('.')[0])
+                        layer_numbers.add(layer_num)
+                    except (IndexError, ValueError):
+                        continue
+            agg_results = get_group_metrics(avg_metrics, groups=[f'layers.{i}' for i in sorted(layer_numbers)], individual=True)
+            agg_path = os.path.join(args.output_dir, model_basename + '_' + args.dataset + '_aggregated_by_layer.json')
+            with open(agg_path, 'w') as f:
+                json.dump(agg_results, f, indent=2)
+            print_stylish_results(agg_results, title=f"Aggregated by Layer ({model_basename})")
+            print(f"Saved aggregated results to {agg_path}")
+        else:
+            print_stylish_results(avg_metrics, title=f"Raw Metrics ({model_basename})")
+
+        # Memory Management: Clear model from VRAM
+        print(f"Cleaning up memory for {model_handle}...")
+        del model
+        del tokenizer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("Memory cleared.")
 
 if __name__ == "__main__":
     main() 

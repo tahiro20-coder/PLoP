@@ -60,14 +60,18 @@ def calculate_nfn_scores(model, batch, random_baseline=True, plot=False, plot_li
                     W_normalized = W / (W_norm + 1e-8)
                     z_normalized = z / (z_norm + 1e-8)
                     Wz = torch.mm(z_normalized, W_normalized.t())
-                    metrics[name]['actual'] = torch.norm(Wz, dim=1).mean().item()/np.sqrt(z.shape[1])
+                    actual_raw = torch.norm(Wz, dim=1).mean().item()/np.sqrt(z.shape[1])
+                    metrics[name]['actual'] = actual_raw
                     if random_baseline:
                         z_random = torch.randn_like(z_normalized)
                         z_random_norm = torch.norm(z_random, dim=1, keepdim=True)
                         z_random_normalized = z_random / (z_random_norm + 1e-8)
                         Wz_random = torch.mm(z_random_normalized, W_normalized.t())
-                        metrics[name]['random'] = torch.norm(Wz_random, dim=1).mean().item()/np.sqrt(z.shape[1])
-                    metrics[name]['nfn'] = metrics[name]['actual']/metrics[name]['random']
+                        random_raw = torch.norm(Wz_random, dim=1).mean().item()/np.sqrt(z.shape[1])
+                        metrics[name]['random'] = random_raw
+                    
+                    # Store a safety ratio to catch numerical collapses
+                    metrics[name]['nfn'] = metrics[name]['actual'] / (metrics[name]['random'] + 1e-12)
                     
                     # Optional Step-by-Step Visualization
                     nonlocal plot_count
@@ -100,7 +104,7 @@ def calculate_nfn_scores(model, batch, random_baseline=True, plot=False, plot_li
 
     return metrics
 
-def get_group_metrics(metrics, groups=['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'down_proj', 'up_proj', 'down_proj'], individual=False):
+def get_group_metrics(metrics, groups=['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'], individual=False):
     """
     Calculate group metrics.
     Args:
@@ -143,3 +147,24 @@ def get_group_metrics(metrics, groups=['q_proj', 'k_proj', 'v_proj', 'o_proj', '
         else:
             results[group] = {'actual': 0.0, 'random': 0.0, 'nfn': 0.0}
     return results 
+
+def get_rank_normalized_metrics(metrics):
+    """
+    Calculate rank-normalized metrics.
+    Scales NFN scores relative to the min/max found in the current run to 
+    accentuate differences that might be masked by small absolute values (typical in Phi-3).
+    """
+    nfn_values = [v['nfn'] for v in metrics.values()]
+    if not nfn_values:
+        return {}
+    
+    min_nfn = min(nfn_values)
+    max_nfn = max(nfn_values)
+    denom = (max_nfn - min_nfn) + 1e-12
+    
+    results = {}
+    for name, values in metrics.items():
+        results[name] = values.copy()
+        results[name]['nfn_rank_norm'] = (values['nfn'] - min_nfn) / denom
+        
+    return results

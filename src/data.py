@@ -152,5 +152,11 @@ def get_dataset(dataset_name="math", num_samples=10, tokenizer=None):
         return load_humaneval_problems(num_samples)
     elif dataset_name == "medqa":
         return load_medqa_problems(num_samples)
+    elif dataset_name == "mmlu_medical":
+        return load_mmlu_problems("professional_medicine", num_samples)
+    elif dataset_name == "mmlu_anatomy":
+        return load_mmlu_problems("anatomy", num_samples)
+    elif dataset_name == "mmlu_genetics":
+        return load_mmlu_problems("medical_genetics", num_samples)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}") 
